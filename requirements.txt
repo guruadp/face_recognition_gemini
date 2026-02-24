@@ -1,0 +1,9 @@
+insightface==0.7.3
+onnxruntime-gpu
+opencv-python
+numpy
+scikit-learn
+tqdm
+matplotlib
+fastapi
+uvicorn
