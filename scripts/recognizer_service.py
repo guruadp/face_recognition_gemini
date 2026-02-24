@@ -1,14 +1,17 @@
 import os
 import time
 import threading
+import json
 import cv2
 import numpy as np
 from fastapi import FastAPI
+from pydantic import BaseModel, Field
 import uvicorn
 from insightface.app import FaceAnalysis
 import onnxruntime as ort
 
-DB_DIR = "db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "db"))
 CAM_INDEX = 0
 W, H = 1280, 720
 DET_SIZE = (640, 640)
@@ -18,8 +21,15 @@ THRESH_NAME = 0.60
 THRESH_FAMILIAR = 0.40
 MIN_DET_SCORE = 0.60
 FRAME_FLUSH_READS = 3
+ENROLL_DEFAULT_SAMPLES = 20
+ENROLL_MAX_FRAMES = 240
 
 app_web = FastAPI(title="face-recognizer")
+
+
+class EnrollRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64, description="Person identifier")
+    samples: int = Field(default=ENROLL_DEFAULT_SAMPLES, ge=5, le=50)
 
 def load_db(db_dir: str):
     gallery = {}  # name -> mean embedding
@@ -38,8 +48,7 @@ def cos_sim(a, b):
     return float(np.dot(a, b))
 
 gallery = load_db(DB_DIR)
-if not gallery:
-    raise SystemExit("DB is empty. Run enroll.py first.")
+gallery_lock = threading.Lock()
 
 available = ort.get_available_providers()
 use_cuda = "CUDAExecutionProvider" in available
@@ -83,8 +92,15 @@ def identify_once():
     emb = f.embedding.astype(np.float32)
     emb = emb / np.linalg.norm(emb)
 
+    with gallery_lock:
+        gallery_items = list(gallery.items())
+
+    if not gallery_items:
+        # Service should remain usable even before first enrollment.
+        return {"status": "unknown", "name": None, "score": 0.0}
+
     best_name, best_score = None, -1.0
-    for name, mean_emb in gallery.items():
+    for name, mean_emb in gallery_items:
         s = cos_sim(emb, mean_emb)
         if s > best_score:
             best_score = s
@@ -96,6 +112,67 @@ def identify_once():
         return {"status": "familiar", "name": None, "score": best_score}
     else:
         return {"status": "unknown", "name": None, "score": best_score}
+
+
+def sanitize_name(raw: str) -> str:
+    cleaned = "".join(ch for ch in raw.strip() if ch.isalnum() or ch in ("_", "-", " "))
+    cleaned = " ".join(cleaned.split())
+    return cleaned
+
+
+def enroll_once(name: str, samples: int):
+    person = sanitize_name(name)
+    if not person:
+        return {"status": "invalid_name", "detail": "Name is empty after sanitization."}
+
+    embs = []
+    with cap_lock:
+        for _ in range(ENROLL_MAX_FRAMES):
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            faces = face_app.get(frame)
+            if not faces:
+                continue
+
+            f = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
+            x1, y1, x2, y2 = map(int, f.bbox)
+            area = (x2 - x1) * (y2 - y1)
+            if area < 140 * 140:
+                continue
+
+            embs.append(f.embedding.astype(np.float32))
+            if len(embs) >= samples:
+                break
+
+    if len(embs) < samples:
+        return {
+            "status": "not_enough_samples",
+            "name": person,
+            "captured": len(embs),
+            "required": samples,
+        }
+
+    embs_arr = np.stack(embs).astype(np.float32)
+    np.savez(os.path.join(DB_DIR, f"{person}.npz"), embs=embs_arr)
+
+    meta = {"person": person, "n_samples": int(len(embs_arr)), "created_unix": time.time()}
+    with open(os.path.join(DB_DIR, f"{person}.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    norm = embs_arr / np.linalg.norm(embs_arr, axis=1, keepdims=True)
+    mean = norm.mean(axis=0)
+    mean = mean / np.linalg.norm(mean)
+    with gallery_lock:
+        gallery[person] = mean
+
+    return {
+        "status": "enrolled",
+        "name": person,
+        "samples": int(len(embs_arr)),
+        "gallery_size": len(gallery),
+    }
 
 @app_web.get("/identify")
 def identify():
@@ -109,6 +186,11 @@ def recognize_alias():
 def recognizer_alias():
     return identify_once()
 
+
+@app_web.post("/enroll")
+def enroll(req: EnrollRequest):
+    return enroll_once(req.name, req.samples)
+
 @app_web.get("/health")
 def health():
     return {"ok": True, "gallery_size": len(gallery), "ts": time.time()}
@@ -118,7 +200,7 @@ def index():
     return {
         "ok": True,
         "service": "face-recognizer",
-        "endpoints": ["/identify", "/recognize", "/recognizer", "/health"],
+        "endpoints": ["/identify", "/recognize", "/recognizer", "/enroll", "/health"],
     }
 
 @app_web.on_event("shutdown")
