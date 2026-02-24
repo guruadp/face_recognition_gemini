@@ -232,15 +232,6 @@ def enroll_once(name: str, samples: int):
 def identify():
     return identify_once()
 
-@app_web.get("/recognize")
-def recognize_alias():
-    return identify_once()
-
-@app_web.get("/recognizer")
-def recognizer_alias():
-    return identify_once()
-
-
 @app_web.post("/enroll")
 def enroll(req: EnrollRequest):
     return enroll_once(req.name, req.samples)
@@ -254,7 +245,7 @@ def index():
     return {
         "ok": True,
         "service": "face-recognizer",
-        "endpoints": ["/identify", "/recognize", "/recognizer", "/enroll", "/health"],
+        "endpoints": ["/identify", "/enroll", "/health"],
     }
 
 @app_web.on_event("shutdown")
