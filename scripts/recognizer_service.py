@@ -12,15 +12,19 @@ import onnxruntime as ort
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "db"))
-CAM_INDEX = 0
-W, H = 1280, 720
-DET_SIZE = (640, 640)
+CAM_INDEX = int(os.getenv("CAM_INDEX", "0"))
+CAM_INDICES_ENV = os.getenv("CAM_INDICES", "").strip()
+W = int(os.getenv("CAM_WIDTH", "640"))
+H = int(os.getenv("CAM_HEIGHT", "480"))
+DET_EDGE = int(os.getenv("DET_EDGE", "320"))
+DET_SIZE = (DET_EDGE, DET_EDGE)
+FACE_MODEL_NAME = os.getenv("FACE_MODEL_NAME", "buffalo_l")
 
 # Conservative defaults (tune later)
 THRESH_NAME = 0.60
 THRESH_FAMILIAR = 0.40
 MIN_DET_SCORE = 0.60
-FRAME_FLUSH_READS = 3
+FRAME_FLUSH_READS = int(os.getenv("FRAME_FLUSH_READS", "1"))
 ENROLL_DEFAULT_SAMPLES = 20
 ENROLL_MAX_FRAMES = 240
 
@@ -33,6 +37,8 @@ class EnrollRequest(BaseModel):
 
 def load_db(db_dir: str):
     gallery = {}  # name -> mean embedding
+    if not os.path.isdir(db_dir):
+        return gallery
     for fn in os.listdir(db_dir):
         if fn.endswith(".npz"):
             name = fn[:-4]
@@ -48,6 +54,8 @@ def cos_sim(a, b):
     return float(np.dot(a, b))
 
 gallery = load_db(DB_DIR)
+if not gallery:
+    print("[WARN] DB is empty. Identification will return UNKNOWN until enrollment.")
 gallery_lock = threading.Lock()
 
 available = ort.get_available_providers()
@@ -56,14 +64,60 @@ providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_cuda else [
 print("ONNX providers:", available)
 print("Using providers:", providers)
 
-face_app = FaceAnalysis(name="buffalo_l", providers=providers)
+face_app = FaceAnalysis(
+    name=FACE_MODEL_NAME,
+    providers=providers,
+    allowed_modules=["detection", "recognition"],
+)
 face_app.prepare(ctx_id=0 if use_cuda else -1, det_size=DET_SIZE)
 
-cap = cv2.VideoCapture(CAM_INDEX)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, W)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
-if not cap.isOpened():
-    raise SystemExit("Could not open camera")
+def parse_indices() -> list[int]:
+    if CAM_INDICES_ENV:
+        out = []
+        for part in CAM_INDICES_ENV.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(int(part))
+            except ValueError:
+                pass
+        if out:
+            return out
+    return [CAM_INDEX, 0, 1, 2]
+
+
+def open_camera():
+    tried = []
+    unique = []
+    seen = set()
+    for idx in parse_indices():
+        if idx in seen:
+            continue
+        seen.add(idx)
+        unique.append(idx)
+
+    backends = [("V4L2", cv2.CAP_V4L2), ("DEFAULT", None)]
+    for idx in unique:
+        for backend_name, backend in backends:
+            if backend is None:
+                cap_local = cv2.VideoCapture(idx)
+            else:
+                cap_local = cv2.VideoCapture(idx, backend)
+            cap_local.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap_local.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap_local.set(cv2.CAP_PROP_FRAME_WIDTH, W)
+            cap_local.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
+            ok, _ = cap_local.read()
+            if ok:
+                return cap_local, idx, backend_name
+            tried.append(f"{idx}/{backend_name}")
+            cap_local.release()
+
+    raise SystemExit("Could not open camera. Tried: " + ", ".join(tried))
+
+
+cap, selected_cam, selected_backend = open_camera()
 cap_lock = threading.Lock()
 
 def identify_once():
@@ -209,4 +263,8 @@ def on_shutdown():
 
 if __name__ == "__main__":
     # Local only, no external access
+    print(
+        f"Config: model={FACE_MODEL_NAME}, cam={selected_cam}, backend={selected_backend}, "
+        f"size={W}x{H}, det_size={DET_SIZE}, flush={FRAME_FLUSH_READS}"
+    )
     uvicorn.run(app_web, host="127.0.0.1", port=8008)

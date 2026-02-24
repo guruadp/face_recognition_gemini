@@ -3,13 +3,14 @@ import re
 import requests
 from google import genai
 
+SERVICE_BASE_URL = os.getenv("RECOGNIZER_BASE_URL", "http://127.0.0.1:8008").rstrip("/")
 RECOGNIZER_URLS = [
-    "http://127.0.0.1:8008/identify",
-    "http://127.0.0.1:8008/recognize",
-    "http://127.0.0.1:8008/recognizer",
+    f"{SERVICE_BASE_URL}/identify",
+    f"{SERVICE_BASE_URL}/recognize",
+    f"{SERVICE_BASE_URL}/recognizer",
 ]
-ENROLL_URL = "http://127.0.0.1:8008/enroll"
-ENROLL_SAMPLES = 20
+ENROLL_URL = f"{SERVICE_BASE_URL}/enroll"
+ENROLL_SAMPLES = int(os.getenv("ENROLL_SAMPLES", "20"))
 
 def load_api_key() -> str:
     key = os.getenv("GEMINI_API_KEY")
@@ -25,19 +26,21 @@ def load_api_key() -> str:
     raise RuntimeError("GEMINI_API_KEY not found in environment or scripts/.env")
 
 client = genai.Client(api_key=load_api_key())
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 pending_enroll_offer = False
 awaiting_enroll_name = False
 
 def should_call_recognition(user_text: str) -> bool:
     t = user_text.lower().strip()
     patterns = [
-        r"\bdo you (know|recognize) me\b",
+        r"\bdo you (know\w*|recogniz\w*) me\b",
         r"\bwho am i\b",
-        r"\bcan you recognize me\b",
+        r"\bcan you recogniz\w* me\b",
         r"\bdo you remember me\b",
         r"\bwhat'?s my name\b",
+        r"\bwhat is my name\b",
         r"\bidentify me\b",
+        r"\bdo you know who i am\b",
     ]
     return any(re.search(p, t) for p in patterns)
 
@@ -102,7 +105,7 @@ def recognition_reply(recog: dict) -> str:
     if status == "no_face":
         return "I cannot see a face clearly right now. Please look at the camera."
     if status == "recognizer_error":
-        return "I do not recognize you right now. Please stay in front of the camera and try again."
+        return "I cannot reach the recognition service right now. Please start recognizer_service.py and try again."
     return "I do not recognize you right now."
 
 def respond(user_text: str) -> str:
