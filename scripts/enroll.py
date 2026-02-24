@@ -6,7 +6,7 @@ import onnxruntime as ort
 import sys
 
 DB_DIR = "db"
-PERSON = "guru"     # change this each time
+PERSON = "saber"     # change this each time
 N_SAMPLES = 20
 CAM_INDEX = 0
 W, H = 1280, 720

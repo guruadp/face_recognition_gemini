@@ -4,11 +4,8 @@ import requests
 from google import genai
 
 SERVICE_BASE_URL = os.getenv("RECOGNIZER_BASE_URL", "http://127.0.0.1:8008").rstrip("/")
-RECOGNIZER_URLS = [
-    f"{SERVICE_BASE_URL}/identify",
-    f"{SERVICE_BASE_URL}/recognize",
-    f"{SERVICE_BASE_URL}/recognizer",
-]
+RECOGNIZER_URL = f"{SERVICE_BASE_URL}/identify"
+HEALTH_URL = f"{SERVICE_BASE_URL}/health"
 ENROLL_URL = f"{SERVICE_BASE_URL}/enroll"
 ENROLL_SAMPLES = int(os.getenv("ENROLL_SAMPLES", "20"))
 
@@ -45,16 +42,21 @@ def should_call_recognition(user_text: str) -> bool:
     return any(re.search(p, t) for p in patterns)
 
 def call_recognizer():
-    errors = []
-    for url in RECOGNIZER_URLS:
-        try:
-            # CPU inference can be slow on first runs; allow more read time.
-            r = requests.get(url, timeout=(1.5, 8.0))
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            errors.append(f"{url}: {e}")
-    return {"status": "recognizer_error", "error": " | ".join(errors), "name": None, "score": 0.0}
+    try:
+        # CPU inference can be slow on first runs; allow more read time.
+        r = requests.get(RECOGNIZER_URL, timeout=(1.5, 8.0))
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"status": "recognizer_error", "error": f"{RECOGNIZER_URL}: {e}", "name": None, "score": 0.0}
+
+def recognizer_health_check():
+    try:
+        r = requests.get(HEALTH_URL, timeout=(1.0, 2.0))
+        r.raise_for_status()
+        return True, r.json()
+    except Exception as e:
+        return False, str(e)
 
 def call_enroll(name: str):
     try:
@@ -144,8 +146,7 @@ def respond(user_text: str) -> str:
         return recognition_reply(call_recognizer())
 
     prompt = f"""
-You are a humanoid reception robot.
-Be concise (1–2 sentences). Friendly but not creepy.
+You are a friendly humanoid reception robot.
 
 User said: {user_text}
 """
@@ -158,6 +159,11 @@ User said: {user_text}
         return f"I could not reach Gemini right now ({e})."
 
 if __name__ == "__main__":
+    ok, info = recognizer_health_check()
+    if ok:
+        print(f"[startup] recognizer ok: {info}")
+    else:
+        print(f"[startup] recognizer unavailable: {info}")
     print("Type messages. Ctrl+C to quit.")
     while True:
         user = input("\nYou: ").strip()

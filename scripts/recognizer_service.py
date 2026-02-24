@@ -53,10 +53,36 @@ def load_db(db_dir: str):
 def cos_sim(a, b):
     return float(np.dot(a, b))
 
+
+def db_state(db_dir: str):
+    if not os.path.isdir(db_dir):
+        return ()
+    state = []
+    for entry in os.scandir(db_dir):
+        if entry.is_file() and entry.name.endswith(".npz"):
+            st = entry.stat()
+            state.append((entry.name, st.st_mtime_ns, st.st_size))
+    state.sort()
+    return tuple(state)
+
+
+def reload_gallery():
+    fresh = load_db(DB_DIR)
+    state = db_state(DB_DIR)
+    with gallery_lock:
+        gallery.clear()
+        gallery.update(fresh)
+        global last_db_state
+        last_db_state = state
+        size = len(gallery)
+    return size
+
+
 gallery = load_db(DB_DIR)
 if not gallery:
     print("[WARN] DB is empty. Identification will return UNKNOWN until enrollment.")
 gallery_lock = threading.Lock()
+last_db_state = db_state(DB_DIR)
 
 available = ort.get_available_providers()
 use_cuda = "CUDAExecutionProvider" in available
@@ -120,7 +146,16 @@ def open_camera():
 cap, selected_cam, selected_backend = open_camera()
 cap_lock = threading.Lock()
 
+
+def ensure_gallery_fresh():
+    global last_db_state
+    current = db_state(DB_DIR)
+    if current != last_db_state:
+        reload_gallery()
+
+
 def identify_once():
+    ensure_gallery_fresh()
     # Flush a few buffered frames so each request uses a fresh image.
     with cap_lock:
         ret, frame = False, None
@@ -220,6 +255,8 @@ def enroll_once(name: str, samples: int):
     mean = mean / np.linalg.norm(mean)
     with gallery_lock:
         gallery[person] = mean
+        global last_db_state
+        last_db_state = db_state(DB_DIR)
 
     return {
         "status": "enrolled",
@@ -236,16 +273,30 @@ def identify():
 def enroll(req: EnrollRequest):
     return enroll_once(req.name, req.samples)
 
+
+@app_web.post("/reload_db")
+def reload_db():
+    size = reload_gallery()
+    return {"ok": True, "gallery_size": size, "db_dir": DB_DIR, "ts": time.time()}
+
 @app_web.get("/health")
 def health():
-    return {"ok": True, "gallery_size": len(gallery), "ts": time.time()}
+    return {
+        "ok": True,
+        "gallery_size": len(gallery),
+        "db_dir": DB_DIR,
+        "camera_index": selected_cam,
+        "camera_backend": selected_backend,
+        "model": FACE_MODEL_NAME,
+        "ts": time.time(),
+    }
 
 @app_web.get("/")
 def index():
     return {
         "ok": True,
         "service": "face-recognizer",
-        "endpoints": ["/identify", "/enroll", "/health"],
+        "endpoints": ["/identify", "/enroll", "/reload_db", "/health"],
     }
 
 @app_web.on_event("shutdown")
