@@ -7,13 +7,14 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "db"))
-CAM_INDEX = int(os.getenv("CAM_INDEX", "0"))
+CAM_INDEX = int(os.getenv("CAM_INDEX", "2"))
 CAM_INDICES_ENV = os.getenv("CAM_INDICES", "").strip()
 W = int(os.getenv("CAM_WIDTH", "640"))
 H = int(os.getenv("CAM_HEIGHT", "480"))
 DET_EDGE = int(os.getenv("DET_EDGE", "320"))
 DET_SIZE = (DET_EDGE, DET_EDGE)
 FACE_MODEL_NAME = os.getenv("FACE_MODEL_NAME", "buffalo_l")
+MIN_FACE_AREA = int(os.getenv("MIN_FACE_AREA", str(50 * 50)))
 
 # Start conservative. You will tune these.
 THRESH_NAME = 0.50
@@ -129,7 +130,7 @@ while True:
         x1, y1, x2, y2 = map(int, f.bbox)
         area = (x2 - x1) * (y2 - y1)
 
-        if area <= 140 * 140:
+        if area <= MIN_FACE_AREA:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
             cv2.putText(frame, "TOO FAR", (x1, max(20, y1 - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
@@ -151,7 +152,6 @@ while True:
             color = (0, 255, 0)
             greet_key = f"known:{best_name}"
             if (now - last_greet_t.get(greet_key, 0.0)) > COOLDOWN_SEC:
-                print(f"[greet] Hello {best_name} (score={best_score:.2f})")
                 last_greet_t[greet_key] = now
             recognized_count += 1
         elif gallery and best_score >= THRESH_FAMILIAR:

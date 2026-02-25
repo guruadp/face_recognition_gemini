@@ -1,4 +1,5 @@
 import os, time, json
+import argparse
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
@@ -6,11 +7,26 @@ import onnxruntime as ort
 import sys
 
 DB_DIR = "db"
-PERSON = "saber"     # change this each time
 N_SAMPLES = 20
-CAM_INDEX = 0
+CAM_INDEX = 2
 W, H = 1280, 720
 DET_SIZE = (640, 640)
+MIN_FACE_AREA = int(os.getenv("MIN_FACE_AREA", str(70 * 70)))
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Enroll face embeddings for one person.")
+    parser.add_argument("name", help="Person name/id, for example: guru")
+    args = parser.parse_args()
+    person = args.name.strip()
+    if not person:
+        raise SystemExit("Name cannot be empty.")
+    if "/" in person or "\\" in person:
+        raise SystemExit("Name cannot contain '/' or '\\'.")
+    return person
+
+
+PERSON = parse_args()
 
 os.makedirs(DB_DIR, exist_ok=True)
 
@@ -47,7 +63,7 @@ while len(embs) < N_SAMPLES:
         x1, y1, x2, y2 = map(int, f.bbox)
         area = (x2-x1) * (y2-y1)
 
-        if area > 140 * 140:
+        if area > MIN_FACE_AREA:
             embs.append(f.embedding.copy())
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(frame, f"Captured {len(embs)}/{N_SAMPLES}", (10, 30),
