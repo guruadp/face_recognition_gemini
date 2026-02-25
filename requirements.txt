@@ -7,3 +7,5 @@ tqdm
 matplotlib
 fastapi
 uvicorn
+requests 
+google-genai
